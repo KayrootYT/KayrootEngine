@@ -18,7 +18,7 @@ jobs:
       # Finds the folder that contains settings.gradle.kts (works even if files were uploaded inside a subfolder)
       - name: Locate Gradle project
         run: |
-          # If the project was uploaded as a .zip file, unpack it automatically
+          # If the project was uploaded as a .zip file (e.g. Kayroot_Engine_2_2_2.zip), unpack it automatically
           for z in ./*.zip; do
             [ -f "$z" ] && unzip -oq "$z" -d _unzipped_project
           done
@@ -35,13 +35,19 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
+      # ubuntu-latest already ships with the Android SDK, so no extra setup action is needed.
       - name: Prepare Android SDK
         run: |
-          yes | sdkmanager --licenses || true
-          sdkmanager "platforms;android-34" "build-tools;34.0.0"
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          SM=$(find "$SDK/cmdline-tools" -name sdkmanager -type f 2>/dev/null | head -1)
+          if [ -z "$SM" ]; then
+            echo "::error::sdkmanager not found in $SDK"
+            exit 1
+          fi
+          yes | "$SM" --sdk_root="$SDK" --licenses > /dev/null || true
+          "$SM" --sdk_root="$SDK" "platforms;android-34" "build-tools;34.0.0"
 
       - uses: gradle/actions/setup-gradle@v4
         with:
