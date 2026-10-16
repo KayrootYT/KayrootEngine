@@ -1,0 +1,90 @@
+name: Build APK
+
+on:
+  push:
+    branches: [ main, master ]
+    tags: [ 'v*' ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Finds the folder that contains settings.gradle.kts (works even if files were uploaded inside a subfolder)
+      - name: Locate Gradle project
+        run: |
+          # If the project was uploaded as a .zip file, unpack it automatically
+          for z in ./*.zip; do
+            [ -f "$z" ] && unzip -oq "$z" -d _unzipped_project
+          done
+          F=$(find . -name settings.gradle.kts -not -path "*/.git/*" | head -1)
+          if [ -z "$F" ]; then
+            echo "::error::settings.gradle.kts not found in the repo. Upload the project files (app/, build.gradle.kts, settings.gradle.kts ...) to the repo."
+            ls -R | head -50
+            exit 1
+          fi
+          echo "PROJECT_DIR=$(dirname "$F")" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Prepare Android SDK
+        run: |
+          yes | sdkmanager --licenses || true
+          sdkmanager "platforms;android-34" "build-tools;34.0.0"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      # Uses your own keystore if you added the 4 secrets (recommended, keeps the same signature
+      # for every update). Otherwise a temporary key is generated so the build still works.
+      - name: Prepare signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          SECRET_KS_PASS: ${{ secrets.KEYSTORE_PASSWORD }}
+          SECRET_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          SECRET_KEY_PASS: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          KS="$RUNNER_TEMP/release.jks"
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > "$KS"
+            echo "KEYSTORE_PASSWORD=$SECRET_KS_PASS" >> "$GITHUB_ENV"
+            echo "KEY_ALIAS=$SECRET_KEY_ALIAS" >> "$GITHUB_ENV"
+            echo "KEY_PASSWORD=$SECRET_KEY_PASS" >> "$GITHUB_ENV"
+          else
+            keytool -genkeypair -v -keystore "$KS" -storepass kayroot123 -keypass kayroot123 \
+              -alias kayroot -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Kayroot Engine"
+            echo "KEYSTORE_PASSWORD=kayroot123" >> "$GITHUB_ENV"
+            echo "KEY_ALIAS=kayroot" >> "$GITHUB_ENV"
+            echo "KEY_PASSWORD=kayroot123" >> "$GITHUB_ENV"
+          fi
+          echo "KEYSTORE_PATH=$KS" >> "$GITHUB_ENV"
+
+      - name: Build release APK
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: gradle :app:assembleRelease --no-daemon --stacktrace
+
+      - name: Rename APK
+        run: cp "$PROJECT_DIR/app/build/outputs/apk/release/app-release.apk" KayrootEngine-v2.2.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: KayrootEngine-apk
+          path: KayrootEngine-v2.2.apk
+
+      - name: Publish GitHub Release (only on tags like v2.0)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: KayrootEngine-v2.2.apk
